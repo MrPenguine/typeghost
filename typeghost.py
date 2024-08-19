@@ -4,35 +4,47 @@ import threading
 import random
 import pyautogui
 from pynput import keyboard
+from ttkbootstrap import Style
+from ttkbootstrap.constants import *
+import ttkbootstrap as ttk
 
 class TypingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Typing Simulator')
-        self.configure(bg="#f0f0f0")
-        self.geometry("1280x720")
+        self.geometry("1366x768")  # Adjusted initial size
         self.typing_thread = None
         self.stop_typing = threading.Event()
         self.is_paused = threading.Event()
         self.typing_items = []
         self.current_item_index = 0
+        self.sidebar_visible = True
+        self.is_fullscreen = False
+
+        style = Style(theme='darkly')
+        style.configure('TButton', font=('Helvetica', 10))
+        style.configure('TLabel', font=('Helvetica', 10))
+        style.configure('TEntry', font=('Helvetica', 10))
 
         self.create_widgets()
 
         self.listener = keyboard.Listener(on_press=self.on_press)
         self.listener.start()
 
+        self.bind("<F11>", self.toggle_fullscreen)
+        self.bind("<Escape>", self.end_fullscreen)
+
     def create_widgets(self):
         self.grid_columnconfigure(0, weight=3)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.main_frame = ttk.Frame(self, padding="10")
+        self.main_frame = ttk.Frame(self, padding="20")
         self.main_frame.grid(row=0, column=0, sticky="nsew")
         self.main_frame.grid_columnconfigure(0, weight=1)
         self.main_frame.grid_rowconfigure(1, weight=1)
 
-        self.sidebar_frame = ttk.Frame(self, padding="10")
+        self.sidebar_frame = ttk.Frame(self, padding="20", width=300)
         self.sidebar_frame.grid(row=0, column=1, sticky="nsew")
         self.sidebar_frame.grid_columnconfigure(0, weight=1)
         self.sidebar_frame.grid_rowconfigure(1, weight=1)
@@ -42,54 +54,90 @@ class TypingSimulatorApp(tk.Tk):
 
     def create_main_content(self):
         input_frame = ttk.Frame(self.main_frame)
-        input_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        input_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
         input_frame.grid_columnconfigure(1, weight=1)
         input_frame.grid_columnconfigure(3, weight=1)
 
-        ttk.Label(input_frame, text='WPM:').grid(row=0, column=0, padx=(0, 5))
+        self.toggle_button = ttk.Button(input_frame, text="☰", command=self.toggle_sidebar, width=3)
+        self.toggle_button.grid(row=0, column=0, padx=(0, 10))
+
+        ttk.Label(input_frame, text='WPM:').grid(row=0, column=1, padx=(0, 5))
         self.wpm_input = ttk.Entry(input_frame, width=10)
-        self.wpm_input.grid(row=0, column=1, sticky="ew", padx=(0, 20))
+        self.wpm_input.grid(row=0, column=2, sticky="ew", padx=(0, 20))
         self.wpm_input.insert(0, '100')
 
-        ttk.Label(input_frame, text='Accuracy:').grid(row=0, column=2, padx=(0, 5))
+        ttk.Label(input_frame, text='Accuracy:').grid(row=0, column=3, padx=(0, 5))
         self.accuracy_input = ttk.Entry(input_frame, width=10)
-        self.accuracy_input.grid(row=0, column=3, sticky="ew")
+        self.accuracy_input.grid(row=0, column=4, sticky="ew")
         self.accuracy_input.insert(0, '0.98')
 
         button_frame = ttk.Frame(input_frame)
-        button_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(10, 0))
-        button_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        button_frame.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(20, 0))
+        button_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.start_button = ttk.Button(button_frame, text="Start", command=self.startTyping)
+        self.start_button = ttk.Button(button_frame, text="Start", command=self.startTyping, style='success.TButton')
         self.start_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
-        self.pause_button = ttk.Button(button_frame, text="Pause", command=self.pauseTyping)
-        self.pause_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.clear_button = ttk.Button(button_frame, text="Clear", command=self.stopAndReset, style='danger.TButton')
+        self.clear_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        self.clear_button = ttk.Button(button_frame, text="Clear", command=self.stopAndReset)
-        self.clear_button.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
+        self.text_editor = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD, padx=10, pady=10, font=('Helvetica', 12))
+        self.text_editor.grid(row=1, column=0, sticky="nsew", pady=(20, 0))
 
-        self.text_editor = scrolledtext.ScrolledText(self.main_frame, wrap=tk.WORD, padx=10, pady=10)
-        self.text_editor.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-
-        ttk.Label(self.main_frame, text="ESC: Clear | ←: Pause | →: Start/Continue", foreground="gray").grid(row=2, column=0, pady=(10, 0))
+        ttk.Label(self.main_frame, text="ESC: Clear | ←: Pause | →: Start/Continue", style='info.TLabel').grid(row=2, column=0, pady=(20, 0))
 
     def create_sidebar_content(self):
-        ttk.Label(self.sidebar_frame, text="Typing Items", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, pady=(0, 10))
+        ttk.Label(self.sidebar_frame, text="Menu", font=("Helvetica", 16, "bold")).grid(row=0, column=0, pady=(0, 20))
 
-        self.item_listbox = tk.Listbox(self.sidebar_frame)
-        self.item_listbox.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        self.item_listbox = tk.Listbox(self.sidebar_frame, font=('Helvetica', 10), bg='#2c3e50', fg='white', selectbackground='#34495e')
+        self.item_listbox.grid(row=1, column=0, sticky="nsew", pady=(0, 20))
         self.item_listbox.bind('<<ListboxSelect>>', self.on_item_select)
 
         button_frame = ttk.Frame(self.sidebar_frame)
         button_frame.grid(row=2, column=0, sticky="ew")
         button_frame.grid_columnconfigure((0, 1), weight=1)
 
-        add_button = ttk.Button(button_frame, text="Add Item", command=self.add_item)
+        add_button = ttk.Button(button_frame, text="Add Item", command=self.add_item, style='success.TButton')
         add_button.grid(row=0, column=0, padx=(0, 5), sticky="ew")
 
-        remove_button = ttk.Button(button_frame, text="Remove Selected", command=self.remove_item)
+        remove_button = ttk.Button(button_frame, text="Remove", command=self.remove_item, style='danger.TButton')
         remove_button.grid(row=0, column=1, padx=(5, 0), sticky="ew")
+
+    def toggle_sidebar(self):
+        if not self.is_fullscreen:
+            current_width = self.winfo_width()
+            current_height = self.winfo_height()
+            
+            if self.sidebar_visible:
+                new_width = current_width // 2
+                self.sidebar_frame.grid_remove()
+                self.grid_columnconfigure(1, weight=0)
+            else:
+                new_width = current_width * 2
+                self.sidebar_frame.grid()
+                self.grid_columnconfigure(1, weight=1)
+            
+            self.geometry(f"{new_width}x{current_height}")
+        else:
+            if self.sidebar_visible:
+                self.sidebar_frame.grid_remove()
+                self.grid_columnconfigure(1, weight=0)
+            else:
+                self.sidebar_frame.grid()
+                self.grid_columnconfigure(1, weight=1)
+
+        self.sidebar_visible = not self.sidebar_visible
+        self.update_idletasks()
+
+    def toggle_fullscreen(self, event=None):
+        self.is_fullscreen = not self.is_fullscreen
+        self.attributes("-fullscreen", self.is_fullscreen)
+        return "break"
+
+    def end_fullscreen(self, event=None):
+        self.is_fullscreen = False
+        self.attributes("-fullscreen", False)
+        return "break"
 
     def on_item_select(self, event):
         selected = self.item_listbox.curselection()
