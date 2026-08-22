@@ -54,6 +54,119 @@ class NetworkManager:
         self.client_thread = None
         self.connected_peer_name = None
         self.connected_peer_ip = None
+        self.manual_ip = None
+
+    def get_all_broadcast_ips(self):
+        """Retrieve broadcast IPs for all active interfaces on this machine."""
+        ips = ["255.255.255.255", "<broadcast>"]
+        try:
+            host_ips = socket.gethostbyname_ex(socket.gethostname())[2]
+            for hip in host_ips:
+                if not hip.startswith("127."):
+                    parts = hip.split(".")
+                    if len(parts) == 4:
+                        ips.append(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
+        except Exception:
+            pass
+        return list(set(ips))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
 
     def get_local_ip(self):
         try:
@@ -63,16 +176,19 @@ class NetworkManager:
             s.close()
             return ip
         except Exception:
-            return "127.0.0.1"
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except Exception:
+                return "127.0.0.1"
 
     def set_device_name(self, new_name):
         clean_name = new_name.strip()
         if clean_name:
             self.device_name = clean_name
             if self.role == "Receiver":
-                self.status_callback(f"RECEIVER [{self.device_name}] READY", ACCENT_GREEN)
+                self.status_callback(f"RECEIVER [{self.device_name}] ({self.get_local_ip()})", ACCENT_GREEN)
             elif self.role == "Sender" and not self.client_socket:
-                self.status_callback(f"[{self.device_name}] SEARCHING...", ACCENT_YELLOW)
+                self.status_callback(f"[{self.device_name}] SEARCHING LAN...", ACCENT_YELLOW)
 
     def set_role(self, new_role):
         if self.role == new_role:
@@ -88,7 +204,7 @@ class NetworkManager:
             self.status_callback("STANDALONE MODE (LOCAL)", ACCENT_GREEN)
 
     def start_receiver_mode(self):
-        self.status_callback(f"RECEIVER [{self.device_name}] LISTENING...", ACCENT_YELLOW)
+        self.status_callback(f"RECEIVER [{self.device_name}] ({self.get_local_ip()})", ACCENT_GREEN)
         self.server_thread = threading.Thread(target=self._run_tcp_server, daemon=True)
         self.server_thread.start()
 
@@ -100,11 +216,24 @@ class NetworkManager:
         self.discovery_thread = threading.Thread(target=self._run_udp_discovery, daemon=True)
         self.discovery_thread.start()
 
+    def connect_manual_ip(self, ip_str):
+        clean_ip = ip_str.strip()
+        if clean_ip:
+            self.manual_ip = clean_ip
+            self.status_callback(f"CONNECTING TO {clean_ip}...", ACCENT_YELLOW)
+            threading.Thread(target=self._connect_to_receiver, args=(clean_ip, TCP_COMM_PORT, f"PC ({clean_ip})"), daemon=True).start()
+
     def _run_udp_broadcast(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
         sock.settimeout(1.0)
         
+        broadcast_targets = self.get_all_broadcast_ips()
+
         while self.running and self.role == "Receiver":
             try:
                 beacon_data = {
@@ -115,10 +244,14 @@ class NetworkManager:
                     "role": "Receiver"
                 }
                 payload = json.dumps(beacon_data).encode("utf-8")
-                sock.sendto(payload, ("<broadcast>", DISCOVERY_PORT))
+                for target in broadcast_targets:
+                    try:
+                        sock.sendto(payload, (target, DISCOVERY_PORT))
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            time.sleep(1.5)
+            time.sleep(1.0)
         try:
             sock.close()
         except Exception:
@@ -126,20 +259,30 @@ class NetworkManager:
 
     def _run_udp_discovery(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind(("", DISCOVERY_PORT))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except Exception:
-            self.status_callback(f"BIND ERROR", ACCENT_RED)
-            return
+            pass
+        if hasattr(socket, 'SO_BROADCAST'):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-        sock.settimeout(2.0)
+        try:
+            # Bind to 0.0.0.0 for cross-platform LAN listening
+            sock.bind(("0.0.0.0", DISCOVERY_PORT))
+        except Exception as e:
+            try:
+                sock.bind(("", DISCOVERY_PORT))
+            except Exception:
+                self.status_callback("DISCOVERY ERROR - USE MANUAL IP", ACCENT_YELLOW)
+                return
+
+        sock.settimeout(1.5)
         while self.running and self.role == "Sender" and not self.client_socket:
             try:
                 data, addr = sock.recvfrom(2048)
                 msg = json.loads(data.decode("utf-8"))
                 if msg.get("magic") == MAGIC_HEADER and msg.get("role") == "Receiver":
-                    target_ip = addr[0]
+                    target_ip = msg.get("ip") or addr[0]
                     target_name = msg.get("name", "RECEIVER")
                     target_port = msg.get("port", TCP_COMM_PORT)
                     self.status_callback(f"FOUND [{target_name}]. PAIRING...", ACCENT_YELLOW)
@@ -156,20 +299,23 @@ class NetworkManager:
 
     def _run_tcp_server(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
         try:
             server.bind(("0.0.0.0", TCP_COMM_PORT))
-            server.listen(1)
+            server.listen(5)
             server.settimeout(1.5)
             self.tcp_server = server
-            self.status_callback(f"RECEIVER [{self.device_name}] READY", ACCENT_GREEN)
-        except Exception:
-            self.status_callback(f"SERVER ERROR", ACCENT_RED)
+        except Exception as e:
+            self.status_callback(f"SERVER ERROR: {e}", ACCENT_RED)
             return
 
         while self.running and self.role == "Receiver":
             try:
                 conn, addr = server.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.connected_peer_ip = addr[0]
                 self.active_receiver_conn = conn
                 self._handle_receiver_connection(conn)
@@ -205,17 +351,31 @@ class NetworkManager:
         except Exception:
             pass
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
             self.active_receiver_conn = None
             self.connected_peer_name = None
             self.connected_peer_ip = None
             if self.role == "Receiver" and self.running:
-                self.status_callback(f"AWAITING SENDER...", ACCENT_YELLOW)
+                self.status_callback(f"RECEIVER [{self.device_name}] ({self.get_local_ip()})", ACCENT_GREEN)
 
     def _connect_to_receiver(self, ip, port, peer_name):
         try:
+            if self.client_socket:
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                self.client_socket = None
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(4.0)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.connect((ip, port))
+            sock.settimeout(None)
+            
             handshake = json.dumps({"type": "HANDSHAKE", "name": self.device_name}) + "\n"
             sock.sendall(handshake.encode("utf-8"))
             
@@ -226,10 +386,10 @@ class NetworkManager:
             
             self.client_thread = threading.Thread(target=self._run_client_listener, daemon=True)
             self.client_thread.start()
-        except Exception:
+        except Exception as e:
             self.client_socket = None
             self.status_callback(f"RETRYING LAN DISCOVERY...", ACCENT_YELLOW)
-            if self.role == "Sender" and self.running:
+            if self.role == "Sender" and self.running and not self.manual_ip:
                 self.discovery_thread = threading.Thread(target=self._run_udp_discovery, daemon=True)
                 self.discovery_thread.start()
 
@@ -277,6 +437,7 @@ class NetworkManager:
             pass
 
     def stop_networking(self):
+        self.manual_ip = None
         if self.client_socket:
             try:
                 self.client_socket.shutdown(socket.SHUT_RDWR)
@@ -312,8 +473,8 @@ class TypingSimulatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('TypeGhost')
-        self.geometry("860x650")
-        self.minsize(720, 520)
+        self.geometry("920x680")
+        self.minsize(740, 540)
         self.configure(bg=BG_ROOT)
         
         pyautogui.PAUSE = 0.0
@@ -328,7 +489,6 @@ class TypingSimulatorApp(tk.Tk):
         self.current_layout_mode = None
         self._resize_debounce_job = None
 
-        # Load icon (works both during direct run and inside PyInstaller .exe bundle)
         icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.abspath(".")), "icon.ico")
         if not os.path.exists(icon_path):
             icon_path = "icon.ico"
@@ -377,7 +537,7 @@ class TypingSimulatorApp(tk.Tk):
 
         # Device Name
         dev_frame = tk.Frame(self.header, bg=BG_PANEL)
-        dev_frame.pack(side="left", padx=(10, 16))
+        dev_frame.pack(side="left", padx=(6, 12))
         tk.Label(dev_frame, text="DEVICE NAME", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
         
         self.device_name_entry = tk.Entry(
@@ -389,7 +549,7 @@ class TypingSimulatorApp(tk.Tk):
             highlightthickness=1,
             highlightbackground=BORDER_COLOR,
             relief="flat",
-            width=13
+            width=12
         )
         self.device_name_entry.insert(0, self.network.device_name)
         self.device_name_entry.pack(anchor="w", pady=(2, 0))
@@ -397,7 +557,7 @@ class TypingSimulatorApp(tk.Tk):
 
         # Network Role Selector - Selected role turns bright/light with glowing green border
         role_frame = tk.Frame(self.header, bg=BG_PANEL)
-        role_frame.pack(side="left", padx=(6, 10))
+        role_frame.pack(side="left", padx=(4, 8))
         tk.Label(role_frame, text="NETWORK ROLE", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
         
         self.role_buttons_box = tk.Frame(role_frame, bg=BG_PANEL)
@@ -412,21 +572,55 @@ class TypingSimulatorApp(tk.Tk):
                 font=("JetBrains Mono", 8, "bold"),
                 relief="flat",
                 highlightthickness=2,
-                padx=8,
+                padx=6,
                 pady=2,
                 cursor="hand2",
                 command=lambda v=val: self.select_role(v)
             )
-            btn.pack(side="left", padx=(0, 6))
+            btn.pack(side="left", padx=(0, 5))
             self.role_buttons[val] = btn
         self.update_role_buttons_ui("Standalone")
 
+        # Direct IP Connect Frame (Useful for complex subnets or AP isolation)
+        self.manual_connect_frame = tk.Frame(self.header, bg=BG_PANEL)
+        tk.Label(self.manual_connect_frame, text="CONNECT IP", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
+        ip_row = tk.Frame(self.manual_connect_frame, bg=BG_PANEL)
+        ip_row.pack(anchor="w", pady=(2, 0))
+        
+        self.manual_ip_entry = tk.Entry(
+            ip_row,
+            font=("JetBrains Mono", 8, "bold"),
+            bg=BG_INPUT,
+            fg=TEXT_MAIN,
+            insertbackground=ACCENT_GREEN,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            relief="flat",
+            width=12
+        )
+        self.manual_ip_entry.insert(0, "192.168.")
+        self.manual_ip_entry.pack(side="left", padx=(0, 3))
+        
+        self.connect_ip_btn = tk.Button(
+            ip_row,
+            text="LINK",
+            font=("JetBrains Mono", 7, "bold"),
+            bg=ACCENT_GREEN,
+            fg="#FFFFFF",
+            relief="flat",
+            cursor="hand2",
+            command=self.on_manual_ip_connect,
+            padx=4,
+            pady=1
+        )
+        self.connect_ip_btn.pack(side="left")
+
         # Network Status Pill
-        status_frame = tk.Frame(self.header, bg=BG_INPUT, highlightthickness=1, highlightbackground=BORDER_COLOR, padx=10, pady=4)
+        status_frame = tk.Frame(self.header, bg=BG_INPUT, highlightthickness=1, highlightbackground=BORDER_COLOR, padx=8, pady=4)
         status_frame.pack(side="right")
         
-        tk.Label(status_frame, text="STATUS", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_INPUT).pack(side="left", padx=(0, 6))
-        self.status_dot = tk.Label(status_frame, text="■", font=("Segoe UI", 9, "bold"), fg=ACCENT_GREEN, bg=BG_INPUT)
+        tk.Label(status_frame, text="STATUS", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_INPUT).pack(side="left", padx=(0, 5))
+        self.status_dot = tk.Label(status_frame, text="■", font=("Segoe UI", 8, "bold"), fg=ACCENT_GREEN, bg=BG_INPUT)
         self.status_dot.pack(side="left", padx=(0, 4))
         
         self.status_label = tk.Label(
@@ -486,7 +680,6 @@ class TypingSimulatorApp(tk.Tk):
         # Right Sidebar Frame (Fullscreen / Wide Window Mode)
         self.sidebar_panel = tk.Frame(self.content_container, bg=BG_PANEL, highlightthickness=BORDER_WIDTH, highlightbackground=BORDER_COLOR, width=300, padx=14, pady=14)
 
-        # Build controls directly parented to self.content_container
         self.create_controls_widgets()
 
         # ==========================================
@@ -505,7 +698,6 @@ class TypingSimulatorApp(tk.Tk):
         f3 = tk.Label(footer, text="▶  → (RIGHT ARROW): START / RESUME", font=("JetBrains Mono", 9, "bold"), fg=ACCENT_GREEN, bg=BG_PANEL)
         f3.grid(row=0, column=2, sticky="e")
 
-        # Initial layout arrangement
         self.apply_layout('stacked')
 
     def create_controls_widgets(self):
@@ -654,6 +846,11 @@ class TypingSimulatorApp(tk.Tk):
         )
         self.clear_side_btn.pack(fill="x")
 
+    def on_manual_ip_connect(self):
+        ip = self.manual_ip_entry.get().strip()
+        if ip:
+            self.network.connect_manual_ip(ip)
+
     def sync_inputs(self, kind, val):
         if kind == 'wpm':
             if self.wpm_top_entry.get() != val:
@@ -693,6 +890,12 @@ class TypingSimulatorApp(tk.Tk):
         self.network.set_role(role)
         self.update_role_buttons_ui(role)
         self.update_start_button_text()
+        
+        # Show Direct IP Connect field in Sender mode
+        if role == "Sender":
+            self.manual_connect_frame.pack(side="left", padx=(6, 12))
+        else:
+            self.manual_connect_frame.pack_forget()
 
     def update_role_buttons_ui(self, active_role):
         for role_val, btn in self.role_buttons.items():
@@ -733,20 +936,17 @@ class TypingSimulatorApp(tk.Tk):
     def apply_layout(self, mode):
         self.current_layout_mode = mode
         
-        # Grid clear
         self.top_control_panel.grid_forget()
         self.main_editor_card.grid_forget()
         self.sidebar_panel.grid_forget()
         self.sidebar_content.pack_forget()
 
         if mode == 'stacked':
-            # Stacked Layout
             self.content_container.grid_columnconfigure(0, weight=1)
             self.content_container.grid_columnconfigure(1, weight=0)
             self.content_container.grid_rowconfigure(0, weight=0)
             self.content_container.grid_rowconfigure(1, weight=1)
 
-            # Top bar elements
             self.top_control_panel.grid(row=0, column=0, sticky="ew", pady=(0, 8))
             self.top_control_panel.grid_columnconfigure((0, 1, 2, 3), weight=1)
             
@@ -758,7 +958,6 @@ class TypingSimulatorApp(tk.Tk):
             self.main_editor_card.grid(row=1, column=0, sticky="nsew")
 
         else:
-            # Sidebar Layout
             self.content_container.grid_columnconfigure(0, weight=1)
             self.content_container.grid_columnconfigure(1, weight=0)
             self.content_container.grid_rowconfigure(0, weight=1)

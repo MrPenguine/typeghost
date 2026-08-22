@@ -11,9 +11,8 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
-from kivy.graphics import Color, RoundedRectangle, Line
+from kivy.graphics import Color, RoundedRectangle
 
-# Set phone-friendly preview window size for desktop testing
 Window.size = (380, 680)
 Window.clearcolor = (0.13, 0.145, 0.165, 1)  # #22252A Slate Dark
 
@@ -32,28 +31,45 @@ class AndroidSenderNetwork:
         self.discovery_thread = None
         self.connected_pc_name = None
         self.connected_pc_ip = None
+        self.manual_ip = None
 
     def start(self):
         self.status_callback("Searching for PC on Wi-Fi...", "warning")
         self.discovery_thread = threading.Thread(target=self._run_discovery, daemon=True)
         self.discovery_thread.start()
 
+    def connect_to_manual_ip(self, ip_str):
+        ip = ip_str.strip()
+        if ip:
+            self.manual_ip = ip
+            self.status_callback(f"Connecting to {ip}...", "warning")
+            threading.Thread(target=self._connect_to_pc, args=(ip, TCP_COMM_PORT, f"PC ({ip})"), daemon=True).start()
+
     def _run_discovery(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind(("", DISCOVERY_PORT))
-        except Exception as e:
-            self.status_callback(f"Bind error: {e}", "danger")
-            return
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+        if hasattr(socket, 'SO_BROADCAST'):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-        sock.settimeout(2.0)
-        while self.running and not self.client_socket:
+        try:
+            sock.bind(("0.0.0.0", DISCOVERY_PORT))
+        except Exception:
+            try:
+                sock.bind(("", DISCOVERY_PORT))
+            except Exception as e:
+                self.status_callback("Enter PC IP manually below", "warning")
+                return
+
+        sock.settimeout(1.5)
+        while self.running and not self.client_socket and not self.manual_ip:
             try:
                 data, addr = sock.recvfrom(2048)
                 msg = json.loads(data.decode("utf-8"))
                 if msg.get("magic") == MAGIC_HEADER and msg.get("role") == "Receiver":
-                    target_ip = addr[0]
+                    target_ip = msg.get("ip") or addr[0]
                     target_name = msg.get("name", "PC Receiver")
                     target_port = msg.get("port", TCP_COMM_PORT)
                     self.status_callback(f"Found [{target_name}]. Connecting...", "info")
@@ -70,12 +86,19 @@ class AndroidSenderNetwork:
 
     def _connect_to_pc(self, ip, port, pc_name):
         try:
+            if self.client_socket:
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                self.client_socket = None
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(4.0)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.connect((ip, port))
             sock.settimeout(None)
             
-            # Send initial Handshake
             handshake = json.dumps({"type": "HANDSHAKE", "name": self.device_name}) + "\n"
             sock.sendall(handshake.encode("utf-8"))
             
@@ -88,8 +111,8 @@ class AndroidSenderNetwork:
             self.client_thread.start()
         except Exception:
             self.client_socket = None
-            self.status_callback("Retrying Wi-Fi discovery...", "warning")
-            if self.running:
+            self.status_callback("Connection failed. Retrying...", "warning")
+            if self.running and not self.manual_ip:
                 self.discovery_thread = threading.Thread(target=self._run_discovery, daemon=True)
                 self.discovery_thread.start()
 
@@ -146,14 +169,12 @@ class TypeGhostMobileApp(App):
         self.title = "TypeGhost Remote"
         self.current_pct = 0
 
-        # Network Manager
         self.network = AndroidSenderNetwork(
             message_callback=self.on_network_message,
             status_callback=self.update_status
         )
 
-        # Root Layout
-        root = BoxLayout(orientation='vertical', padding=14, spacing=10)
+        root = BoxLayout(orientation='vertical', padding=12, spacing=8)
         with root.canvas.before:
             Color(0.13, 0.145, 0.165, 1) # #22252A
             self.bg_rect = RoundedRectangle(pos=root.pos, size=root.size)
@@ -161,13 +182,13 @@ class TypeGhostMobileApp(App):
                   size=lambda obj, val: setattr(self.bg_rect, 'size', val))
 
         # --- 1. Header (Brand & Status) ---
-        header = BoxLayout(orientation='horizontal', size_hint_y=None, height=45)
+        header = BoxLayout(orientation='horizontal', size_hint_y=None, height=38)
         title_label = Label(
             text="⚡ TYPEGHOST",
-            font_size='18sp',
+            font_size='17sp',
             bold=True,
-            color=(0, 0.74, 0.55, 1), # #00BC8C Emerald
-            size_hint_x=0.5,
+            color=(0, 0.74, 0.55, 1),
+            size_hint_x=0.45,
             halign='left',
             valign='middle'
         )
@@ -176,10 +197,10 @@ class TypeGhostMobileApp(App):
 
         self.status_label = Label(
             text="● Searching...",
-            font_size='11sp',
+            font_size='10sp',
             bold=True,
-            color=(0.95, 0.61, 0.07, 1), # Amber
-            size_hint_x=0.5,
+            color=(0.95, 0.61, 0.07, 1),
+            size_hint_x=0.55,
             halign='right',
             valign='middle'
         )
@@ -187,16 +208,45 @@ class TypeGhostMobileApp(App):
         header.add_widget(self.status_label)
         root.add_widget(header)
 
-        # --- 2. Parameters Card (WPM & Accuracy) ---
-        params_card = GridLayout(cols=2, spacing=10, size_hint_y=None, height=75)
+        # --- 2. Manual IP Quick-Connect Bar ---
+        ip_bar = BoxLayout(orientation='horizontal', size_hint_y=None, height=36, spacing=6)
+        ip_label = Label(text="PC IP:", font_size='10sp', bold=True, color=(0.6, 0.63, 0.67, 1), size_hint_x=None, width=45)
+        ip_bar.add_widget(ip_label)
+        
+        self.manual_ip_input = TextInput(
+            text="192.168.",
+            multiline=False,
+            font_size='12sp',
+            background_color=(0.12, 0.13, 0.15, 1),
+            foreground_color=(1, 1, 1, 1),
+            cursor_color=(0, 0.74, 0.55, 1)
+        )
+        ip_bar.add_widget(self.manual_ip_input)
+
+        connect_btn = Button(
+            text="LINK",
+            font_size='11sp',
+            bold=True,
+            size_hint_x=None,
+            width=60,
+            background_normal='',
+            background_color=(0, 0.74, 0.55, 1),
+            color=(1, 1, 1, 1)
+        )
+        connect_btn.bind(on_release=lambda x: self.network.connect_to_manual_ip(self.manual_ip_input.text))
+        ip_bar.add_widget(connect_btn)
+        root.add_widget(ip_bar)
+
+        # --- 3. Parameters Card (WPM & Accuracy) ---
+        params_card = GridLayout(cols=2, spacing=8, size_hint_y=None, height=65)
 
         # WPM
-        wpm_box = BoxLayout(orientation='vertical', spacing=2)
-        wpm_box.add_widget(Label(text="SPEED (WPM)", font_size='10sp', color=(0.6, 0.63, 0.67, 1), size_hint_y=None, height=18))
+        wpm_box = BoxLayout(orientation='vertical', spacing=1)
+        wpm_box.add_widget(Label(text="SPEED (WPM)", font_size='9sp', color=(0.6, 0.63, 0.67, 1), size_hint_y=None, height=16))
         self.wpm_input = TextInput(
             text="100",
             multiline=False,
-            font_size='16sp',
+            font_size='14sp',
             halign='center',
             background_color=(0.12, 0.13, 0.15, 1),
             foreground_color=(1, 1, 1, 1),
@@ -207,12 +257,12 @@ class TypeGhostMobileApp(App):
         params_card.add_widget(wpm_box)
 
         # Accuracy
-        acc_box = BoxLayout(orientation='vertical', spacing=2)
-        acc_box.add_widget(Label(text="ACCURACY (0.0-1.0)", font_size='10sp', color=(0.6, 0.63, 0.67, 1), size_hint_y=None, height=18))
+        acc_box = BoxLayout(orientation='vertical', spacing=1)
+        acc_box.add_widget(Label(text="ACCURACY (0.0-1.0)", font_size='9sp', color=(0.6, 0.63, 0.67, 1), size_hint_y=None, height=16))
         self.acc_input = TextInput(
             text="0.98",
             multiline=False,
-            font_size='16sp',
+            font_size='14sp',
             halign='center',
             background_color=(0.12, 0.13, 0.15, 1),
             foreground_color=(1, 1, 1, 1),
@@ -224,20 +274,9 @@ class TypeGhostMobileApp(App):
 
         root.add_widget(params_card)
 
-        # --- 3. Live Text Buffer Card ---
-        buffer_label = Label(
-            text="TEXT TO PUSH TO PC (IN-MEMORY STREAM)",
-            font_size='10sp',
-            color=(0.6, 0.63, 0.67, 1),
-            size_hint_y=None,
-            height=20,
-            halign='left'
-        )
-        buffer_label.bind(size=buffer_label.setter('text_size'))
-        root.add_widget(buffer_label)
-
+        # --- 4. Live Text Buffer Card ---
         self.text_editor = TextInput(
-            hint_text="Paste or type text here...\nIt syncs live to the PC in memory without touching clipboard.",
+            hint_text="Paste or type text here...\nSyncs live in-memory directly to PC.",
             multiline=True,
             font_size='13sp',
             background_color=(0.1, 0.1, 0.12, 1),
@@ -247,15 +286,15 @@ class TypeGhostMobileApp(App):
         self.text_editor.bind(text=self.on_text_or_params_changed)
         root.add_widget(self.text_editor)
 
-        # --- 4. Remote Action Control Buttons ---
-        btn_grid = GridLayout(cols=2, spacing=10, size_hint_y=None, height=55)
+        # --- 5. Remote Action Control Buttons ---
+        btn_grid = GridLayout(cols=2, spacing=8, size_hint_y=None, height=50)
 
         self.start_btn = Button(
             text="▶ START",
-            font_size='14sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
-            background_color=(0, 0.74, 0.55, 1), # Emerald
+            background_color=(0, 0.74, 0.55, 1),
             color=(1, 1, 1, 1)
         )
         self.start_btn.bind(on_release=self.on_start_pressed)
@@ -263,10 +302,10 @@ class TypeGhostMobileApp(App):
 
         self.pause_btn = Button(
             text="⏸ PAUSE",
-            font_size='14sp',
+            font_size='13sp',
             bold=True,
             background_normal='',
-            background_color=(0.95, 0.61, 0.07, 1), # Amber
+            background_color=(0.95, 0.61, 0.07, 1),
             color=(1, 1, 1, 1)
         )
         self.pause_btn.bind(on_release=self.on_pause_pressed)
@@ -275,20 +314,18 @@ class TypeGhostMobileApp(App):
 
         self.clear_btn = Button(
             text="⏹ STOP & CLEAR PC (ESC)",
-            font_size='13sp',
+            font_size='12sp',
             bold=True,
             size_hint_y=None,
-            height=45,
+            height=40,
             background_normal='',
-            background_color=(0.91, 0.3, 0.24, 1), # Crimson Red
+            background_color=(0.91, 0.3, 0.24, 1),
             color=(1, 1, 1, 1)
         )
         self.clear_btn.bind(on_release=self.on_clear_pressed)
         root.add_widget(self.clear_btn)
 
-        # Start network thread
         self.network.start()
-
         return root
 
     def on_text_or_params_changed(self, instance, value):
