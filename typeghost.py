@@ -7,6 +7,7 @@ import time
 import random
 import platform
 import os
+import sys
 import ctypes
 import pyautogui
 from pynput import keyboard
@@ -327,9 +328,13 @@ class TypingSimulatorApp(tk.Tk):
         self.current_layout_mode = None
         self._resize_debounce_job = None
 
-        if os.path.exists("icon.ico"):
+        # Load icon (works both during direct run and inside PyInstaller .exe bundle)
+        icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.abspath(".")), "icon.ico")
+        if not os.path.exists(icon_path):
+            icon_path = "icon.ico"
+        if os.path.exists(icon_path):
             try:
-                self.iconbitmap("icon.ico")
+                self.iconbitmap(icon_path)
             except Exception:
                 pass
 
