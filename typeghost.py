@@ -21,16 +21,15 @@ DISCOVERY_PORT = 45454
 TCP_COMM_PORT = 45455
 MAGIC_HEADER = "TYPEGHOST_BEACON"
 
-# Original Sleek Dark / Darkly Palette (Charcoal Gray, Emerald Green, White, Crimson)
+# Original Sleek Dark Palette
 BG_ROOT = "#22252A"         # Sleek dark slate canvas
 BG_PANEL = "#2C3038"        # Card / panel background
 BG_INPUT = "#1E2227"        # Deep input background
 BORDER_COLOR = "#3A3F4B"    # Subtle elegant border outline
-BORDER_ACTIVE = "#00BC8C"   # Vibrant Emerald Green outline
 TEXT_MAIN = "#FFFFFF"       # Crisp White text
 TEXT_MUTED = "#9AA0AC"      # Muted silver-gray subtitle
-ACCENT_GREEN = "#00BC8C"    # Original Success Emerald Green
-ACCENT_RED = "#E74C3C"      # Original Danger Crimson Red
+ACCENT_GREEN = "#00BC8C"    # Success Emerald Green
+ACCENT_RED = "#E74C3C"      # Danger Crimson Red
 ACCENT_YELLOW = "#F39C12"   # Warning Amber
 BORDER_WIDTH = 2
 
@@ -326,6 +325,7 @@ class TypingSimulatorApp(tk.Tk):
         self._updating_text_programmatically = False
         self.current_percentage = 0
         self.current_layout_mode = None
+        self._resize_debounce_job = None
 
         if os.path.exists("icon.ico"):
             try:
@@ -441,7 +441,6 @@ class TypingSimulatorApp(tk.Tk):
 
         # Top Parameters Frame (Compact / Small Window Mode)
         self.top_control_panel = tk.Frame(self.content_container, bg=BG_PANEL, highlightthickness=BORDER_WIDTH, highlightbackground=BORDER_COLOR, padx=14, pady=10)
-        self.top_control_panel.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         # Editor Card
         self.main_editor_card = tk.Frame(self.content_container, bg=BG_PANEL, highlightthickness=BORDER_WIDTH, highlightbackground=BORDER_COLOR, padx=14, pady=10)
@@ -482,7 +481,7 @@ class TypingSimulatorApp(tk.Tk):
         # Right Sidebar Frame (Fullscreen / Wide Window Mode)
         self.sidebar_panel = tk.Frame(self.content_container, bg=BG_PANEL, highlightthickness=BORDER_WIDTH, highlightbackground=BORDER_COLOR, width=300, padx=14, pady=14)
 
-        # Build reusable control elements (WPM, Accuracy, Buttons)
+        # Build controls directly parented to self.content_container
         self.create_controls_widgets()
 
         # ==========================================
@@ -505,9 +504,12 @@ class TypingSimulatorApp(tk.Tk):
         self.apply_layout('stacked')
 
     def create_controls_widgets(self):
-        # WPM input box
-        self.wpm_input = tk.Entry(
-            font=("JetBrains Mono", 15, "bold"),
+        # 1. Top Panel Sub-Containers
+        self.top_wpm_box = tk.Frame(self.top_control_panel, bg=BG_PANEL)
+        tk.Label(self.top_wpm_box, text="SPEED (WPM)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
+        self.wpm_top_entry = tk.Entry(
+            self.top_wpm_box,
+            font=("JetBrains Mono", 14, "bold"),
             bg=BG_INPUT,
             fg=TEXT_MAIN,
             insertbackground=ACCENT_GREEN,
@@ -517,12 +519,15 @@ class TypingSimulatorApp(tk.Tk):
             justify="center",
             width=6
         )
-        self.wpm_input.insert(0, '100')
-        self.wpm_input.bind("<KeyRelease>", self.on_params_changed)
+        self.wpm_top_entry.insert(0, '100')
+        self.wpm_top_entry.pack(side="left", pady=(2, 0))
+        self.wpm_top_entry.bind("<KeyRelease>", lambda e: self.sync_inputs('wpm', self.wpm_top_entry.get()))
 
-        # Accuracy input box
-        self.accuracy_input = tk.Entry(
-            font=("JetBrains Mono", 15, "bold"),
+        self.top_acc_box = tk.Frame(self.top_control_panel, bg=BG_PANEL)
+        tk.Label(self.top_acc_box, text="ACCURACY (0-1.0)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
+        self.acc_top_entry = tk.Entry(
+            self.top_acc_box,
+            font=("JetBrains Mono", 14, "bold"),
             bg=BG_INPUT,
             fg=TEXT_MAIN,
             insertbackground=ACCENT_GREEN,
@@ -532,11 +537,88 @@ class TypingSimulatorApp(tk.Tk):
             justify="center",
             width=6
         )
-        self.accuracy_input.insert(0, '0.98')
-        self.accuracy_input.bind("<KeyRelease>", self.on_params_changed)
+        self.acc_top_entry.insert(0, '0.98')
+        self.acc_top_entry.pack(side="left", pady=(2, 0))
+        self.acc_top_entry.bind("<KeyRelease>", lambda e: self.sync_inputs('acc', self.acc_top_entry.get()))
 
-        # Green Start Button & Crimson Clear Button
-        self.start_button = tk.Button(
+        self.start_top_btn = tk.Button(
+            self.top_control_panel,
+            text="▶  START TYPING (→)",
+            font=("Inter", 10, "bold"),
+            bg=ACCENT_GREEN,
+            fg="#FFFFFF",
+            activebackground="#00D8A1",
+            activeforeground="#FFFFFF",
+            highlightthickness=0,
+            relief="flat",
+            cursor="hand2",
+            command=self.handle_start_action,
+            pady=8
+        )
+
+        self.clear_top_btn = tk.Button(
+            self.top_control_panel,
+            text="⏹  STOP & CLEAR (ESC)",
+            font=("Inter", 10, "bold"),
+            bg=ACCENT_RED,
+            fg="#FFFFFF",
+            activebackground="#FF6B6B",
+            activeforeground="#FFFFFF",
+            highlightthickness=0,
+            relief="flat",
+            cursor="hand2",
+            command=self.handle_clear_action,
+            pady=8
+        )
+
+        # 2. Sidebar Panel Sub-Containers
+        self.sidebar_content = tk.Frame(self.sidebar_panel, bg=BG_PANEL)
+        
+        tk.Label(self.sidebar_content, text="TYPING SPEED", font=("JetBrains Mono", 9, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w", pady=(0, 2))
+        tk.Frame(self.sidebar_content, bg=BORDER_COLOR, height=1).pack(fill="x", pady=(0, 8))
+        
+        w_row = tk.Frame(self.sidebar_content, bg=BG_PANEL)
+        w_row.pack(fill="x", pady=(0, 16))
+        self.wpm_side_entry = tk.Entry(
+            w_row,
+            font=("JetBrains Mono", 16, "bold"),
+            bg=BG_INPUT,
+            fg=TEXT_MAIN,
+            insertbackground=ACCENT_GREEN,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            relief="flat",
+            justify="center",
+            width=6
+        )
+        self.wpm_side_entry.insert(0, '100')
+        self.wpm_side_entry.pack(fill="x", side="left", expand=True)
+        self.wpm_side_entry.bind("<KeyRelease>", lambda e: self.sync_inputs('wpm', self.wpm_side_entry.get()))
+        tk.Label(w_row, text=" WPM", font=("JetBrains Mono", 10, "bold"), fg=TEXT_MAIN, bg=BG_PANEL).pack(side="left", padx=(6, 0))
+
+        tk.Label(self.sidebar_content, text="HUMAN ACCURACY", font=("JetBrains Mono", 9, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w", pady=(0, 2))
+        tk.Frame(self.sidebar_content, bg=BORDER_COLOR, height=1).pack(fill="x", pady=(0, 8))
+        self.acc_side_entry = tk.Entry(
+            self.sidebar_content,
+            font=("JetBrains Mono", 16, "bold"),
+            bg=BG_INPUT,
+            fg=TEXT_MAIN,
+            insertbackground=ACCENT_GREEN,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            relief="flat",
+            justify="center",
+            width=6
+        )
+        self.acc_side_entry.insert(0, '0.98')
+        self.acc_side_entry.pack(fill="x", pady=(0, 2))
+        self.acc_side_entry.bind("<KeyRelease>", lambda e: self.sync_inputs('acc', self.acc_side_entry.get()))
+        tk.Label(self.sidebar_content, text="(0.0 - 1.0)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="e", pady=(0, 16))
+
+        tk.Frame(self.sidebar_content, bg=BG_PANEL).pack(fill="both", expand=True)
+
+        self.start_side_btn = tk.Button(
+            self.sidebar_content,
             text="▶  START TYPING (→)",
             font=("Inter", 10, "bold"),
             bg=ACCENT_GREEN,
@@ -549,8 +631,10 @@ class TypingSimulatorApp(tk.Tk):
             command=self.handle_start_action,
             pady=10
         )
+        self.start_side_btn.pack(fill="x", pady=(0, 10))
 
-        self.clear_button = tk.Button(
+        self.clear_side_btn = tk.Button(
+            self.sidebar_content,
             text="⏹  STOP & CLEAR (ESC)",
             font=("Inter", 10, "bold"),
             bg=ACCENT_RED,
@@ -563,6 +647,42 @@ class TypingSimulatorApp(tk.Tk):
             command=self.handle_clear_action,
             pady=10
         )
+        self.clear_side_btn.pack(fill="x")
+
+    def sync_inputs(self, kind, val):
+        if kind == 'wpm':
+            if self.wpm_top_entry.get() != val:
+                self.wpm_top_entry.delete(0, tk.END)
+                self.wpm_top_entry.insert(0, val)
+            if self.wpm_side_entry.get() != val:
+                self.wpm_side_entry.delete(0, tk.END)
+                self.wpm_side_entry.insert(0, val)
+        elif kind == 'acc':
+            if self.acc_top_entry.get() != val:
+                self.acc_top_entry.delete(0, tk.END)
+                self.acc_top_entry.insert(0, val)
+            if self.acc_side_entry.get() != val:
+                self.acc_side_entry.delete(0, tk.END)
+                self.acc_side_entry.insert(0, val)
+        self.on_params_changed()
+
+    def get_wpm_val(self):
+        return self.wpm_top_entry.get().strip() or "100"
+
+    def get_acc_val(self):
+        return self.acc_top_entry.get().strip() or "0.98"
+
+    def set_wpm_val(self, val):
+        self.wpm_top_entry.delete(0, tk.END)
+        self.wpm_top_entry.insert(0, str(val))
+        self.wpm_side_entry.delete(0, tk.END)
+        self.wpm_side_entry.insert(0, str(val))
+
+    def set_acc_val(self, val):
+        self.acc_top_entry.delete(0, tk.END)
+        self.acc_top_entry.insert(0, str(val))
+        self.acc_side_entry.delete(0, tk.END)
+        self.acc_side_entry.insert(0, str(val))
 
     def select_role(self, role):
         self.network.set_role(role)
@@ -570,12 +690,11 @@ class TypingSimulatorApp(tk.Tk):
         self.update_start_button_text()
 
     def update_role_buttons_ui(self, active_role):
-        # Selected mode becomes bright light with high-contrast text and emerald green highlight
         for role_val, btn in self.role_buttons.items():
             if role_val == active_role:
                 btn.configure(
-                    bg="#FFFFFF",                 # Bright light background when selected
-                    fg="#1A1A1A",                 # Crisp dark text
+                    bg="#FFFFFF",
+                    fg="#1A1A1A",
                     activebackground="#FFFFFF",
                     activeforeground="#000000",
                     highlightbackground=ACCENT_GREEN,
@@ -583,8 +702,8 @@ class TypingSimulatorApp(tk.Tk):
                 )
             else:
                 btn.configure(
-                    bg=BG_INPUT,                  # Dark muted background when not selected
-                    fg=TEXT_MUTED,                # Subdued gray text
+                    bg=BG_INPUT,
+                    fg=TEXT_MUTED,
                     activebackground="#252A30",
                     activeforeground=TEXT_MAIN,
                     highlightbackground=BORDER_COLOR,
@@ -593,64 +712,48 @@ class TypingSimulatorApp(tk.Tk):
 
     def on_window_resize(self, event):
         if event.widget == self:
-            width = self.winfo_width()
-            if width >= 1100 or self.is_fullscreen:
-                if self.current_layout_mode != 'sidebar':
-                    self.apply_layout('sidebar')
-            else:
-                if self.current_layout_mode != 'stacked':
-                    self.apply_layout('stacked')
+            if self._resize_debounce_job:
+                self.after_cancel(self._resize_debounce_job)
+            self._resize_debounce_job = self.after(50, self._check_resize_layout)
+
+    def _check_resize_layout(self):
+        width = self.winfo_width()
+        if width >= 1100 or self.is_fullscreen:
+            if self.current_layout_mode != 'sidebar':
+                self.apply_layout('sidebar')
+        else:
+            if self.current_layout_mode != 'stacked':
+                self.apply_layout('stacked')
 
     def apply_layout(self, mode):
         self.current_layout_mode = mode
         
-        for widget in self.content_container.winfo_children():
-            widget.grid_forget()
-
-        self.wpm_input.pack_forget()
-        self.accuracy_input.pack_forget()
-        self.start_button.pack_forget()
-        self.clear_button.pack_forget()
-        self.start_button.grid_forget()
-        self.clear_button.grid_forget()
-
-        for w in self.top_control_panel.winfo_children():
-            w.destroy()
-        for w in self.sidebar_panel.winfo_children():
-            w.destroy()
+        # Grid clear
+        self.top_control_panel.grid_forget()
+        self.main_editor_card.grid_forget()
+        self.sidebar_panel.grid_forget()
+        self.sidebar_content.pack_forget()
 
         if mode == 'stacked':
-            # === COMPACT STACKED LAYOUT (For small / normal window) ===
+            # Stacked Layout
             self.content_container.grid_columnconfigure(0, weight=1)
             self.content_container.grid_columnconfigure(1, weight=0)
             self.content_container.grid_rowconfigure(0, weight=0)
             self.content_container.grid_rowconfigure(1, weight=1)
 
-            # Top Control Bar
+            # Top bar elements
             self.top_control_panel.grid(row=0, column=0, sticky="ew", pady=(0, 8))
             self.top_control_panel.grid_columnconfigure((0, 1, 2, 3), weight=1)
+            
+            self.top_wpm_box.grid(row=0, column=0, padx=8, sticky="w")
+            self.top_acc_box.grid(row=0, column=1, padx=8, sticky="w")
+            self.start_top_btn.grid(row=0, column=2, padx=6, sticky="ew")
+            self.clear_top_btn.grid(row=0, column=3, padx=6, sticky="ew")
 
-            # WPM Box
-            wpm_box = tk.Frame(self.top_control_panel, bg=BG_PANEL)
-            wpm_box.grid(row=0, column=0, padx=8, sticky="w")
-            tk.Label(wpm_box, text="SPEED (WPM)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
-            self.wpm_input.pack(in_=wpm_box, side="left", pady=(2, 0))
-
-            # Accuracy Box
-            acc_box = tk.Frame(self.top_control_panel, bg=BG_PANEL)
-            acc_box.grid(row=0, column=1, padx=8, sticky="w")
-            tk.Label(acc_box, text="ACCURACY (0-1.0)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w")
-            self.accuracy_input.pack(in_=acc_box, side="left", pady=(2, 0))
-
-            # Buttons
-            self.start_button.grid(in_=self.top_control_panel, row=0, column=2, padx=6, sticky="ew")
-            self.clear_button.grid(in_=self.top_control_panel, row=0, column=3, padx=6, sticky="ew")
-
-            # Main Editor below
             self.main_editor_card.grid(row=1, column=0, sticky="nsew")
 
         else:
-            # === LARGE SIDEBAR LAYOUT (For wide / fullscreen) ===
+            # Sidebar Layout
             self.content_container.grid_columnconfigure(0, weight=1)
             self.content_container.grid_columnconfigure(1, weight=0)
             self.content_container.grid_rowconfigure(0, weight=1)
@@ -659,28 +762,7 @@ class TypingSimulatorApp(tk.Tk):
             self.main_editor_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
             self.sidebar_panel.grid(row=0, column=1, sticky="nsew")
             self.sidebar_panel.grid_propagate(False)
-
-            # Speed
-            tk.Label(self.sidebar_panel, text="TYPING SPEED", font=("JetBrains Mono", 9, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w", pady=(0, 2))
-            tk.Frame(self.sidebar_panel, bg=BORDER_COLOR, height=1).pack(fill="x", pady=(0, 8))
-            
-            w_row = tk.Frame(self.sidebar_panel, bg=BG_PANEL)
-            w_row.pack(fill="x", pady=(0, 16))
-            self.wpm_input.pack(in_=w_row, fill="x", side="left", expand=True)
-            tk.Label(w_row, text=" WPM", font=("JetBrains Mono", 10, "bold"), fg=TEXT_MAIN, bg=BG_PANEL).pack(side="left", padx=(6, 0))
-
-            # Accuracy
-            tk.Label(self.sidebar_panel, text="HUMAN ACCURACY", font=("JetBrains Mono", 9, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="w", pady=(0, 2))
-            tk.Frame(self.sidebar_panel, bg=BORDER_COLOR, height=1).pack(fill="x", pady=(0, 8))
-            self.accuracy_input.pack(in_=self.sidebar_panel, fill="x", pady=(0, 2))
-            tk.Label(self.sidebar_panel, text="(0.0 - 1.0)", font=("JetBrains Mono", 8, "bold"), fg=TEXT_MUTED, bg=BG_PANEL).pack(anchor="e", pady=(0, 16))
-
-            # Spacer
-            tk.Frame(self.sidebar_panel, bg=BG_PANEL).pack(fill="both", expand=True)
-
-            # Action Buttons in Sidebar
-            self.start_button.pack(in_=self.sidebar_panel, fill="x", pady=(0, 10))
-            self.clear_button.pack(in_=self.sidebar_panel, fill="x")
+            self.sidebar_content.pack(fill="both", expand=True)
 
         self.update_start_button_text()
 
@@ -693,19 +775,22 @@ class TypingSimulatorApp(tk.Tk):
         
         if role == "Receiver":
             if self.current_percentage > 0:
-                self.start_button.configure(text=f"RECEIVER TYPING...{p_str}")
+                txt = f"RECEIVER TYPING...{p_str}"
             else:
-                self.start_button.configure(text="RECEIVER ACTIVE (LISTENING)")
+                txt = "RECEIVER ACTIVE (LISTENING)"
         elif role == "Sender":
             if self.current_percentage > 0:
-                self.start_button.configure(text=f"▶  REMOTE TYPING...{p_str} (→)")
+                txt = f"▶  REMOTE TYPING...{p_str} (→)"
             else:
-                self.start_button.configure(text="▶  SEND & START (→)")
+                txt = "▶  SEND & START (→)"
         else:
             if self.current_percentage > 0:
-                self.start_button.configure(text=f"▶  TYPING...{p_str} (→)")
+                txt = f"▶  TYPING...{p_str} (→)"
             else:
-                self.start_button.configure(text="▶  START TYPING (→)")
+                txt = "▶  START TYPING (→)"
+
+        self.start_top_btn.configure(text=txt)
+        self.start_side_btn.configure(text=txt)
 
     def on_device_name_changed(self, event=None):
         new_name = self.device_name_entry.get().strip()
@@ -724,15 +809,15 @@ class TypingSimulatorApp(tk.Tk):
         pass
 
     def on_text_pasted(self, event=None):
-        self.after(30, self.on_text_changed)
+        self.after(20, self.on_text_changed)
 
     def on_text_changed(self, event=None):
         if self._updating_text_programmatically:
             return
         if self.network.role == "Sender":
             text = self.text_editor.get("1.0", tk.END).strip()
-            wpm = self.wpm_input.get().strip()
-            accuracy = self.accuracy_input.get().strip()
+            wpm = self.get_wpm_val()
+            accuracy = self.get_acc_val()
             self.network.send_packet({
                 "type": "SYNC_DATA",
                 "text": text,
@@ -754,10 +839,8 @@ class TypingSimulatorApp(tk.Tk):
                 self._updating_text_programmatically = True
                 self.text_editor.delete("1.0", tk.END)
                 self.text_editor.insert(tk.END, text)
-                self.wpm_input.delete(0, tk.END)
-                self.wpm_input.insert(0, wpm)
-                self.accuracy_input.delete(0, tk.END)
-                self.accuracy_input.insert(0, accuracy)
+                self.set_wpm_val(wpm)
+                self.set_acc_val(accuracy)
                 self._updating_text_programmatically = False
 
             self.after(0, apply_remote_sync)
@@ -829,7 +912,7 @@ class TypingSimulatorApp(tk.Tk):
     def stopAndReset(self):
         self.stop_typing.set()
         if self.typing_thread and self.typing_thread.is_alive():
-            self.typing_thread.join(timeout=0.2)
+            self.typing_thread.join(timeout=0.1)
         self._updating_text_programmatically = True
         self.text_editor.delete("1.0", tk.END)
         self._updating_text_programmatically = False
@@ -843,12 +926,12 @@ class TypingSimulatorApp(tk.Tk):
             return
 
         try:
-            wpm = float(self.wpm_input.get())
+            wpm = float(self.get_wpm_val())
         except ValueError:
             wpm = 100.0
 
         try:
-            accuracy = float(self.accuracy_input.get())
+            accuracy = float(self.get_acc_val())
         except ValueError:
             accuracy = 0.98
 
@@ -857,13 +940,15 @@ class TypingSimulatorApp(tk.Tk):
     def global_typoer(self, text, wpm, accuracy):
         chars_per_minute = max(wpm * 5, 1)
         interval = 60.0 / chars_per_minute
-        correction_interval = interval / 2
+        correction_interval = interval * 0.5
 
         total_chars = max(len(text), 1)
         chars_typed = 0
+        last_reported_pct = -1
 
         lines = text.split('\n')
         current_indent = 0
+        typo_chars = 'abcdefghijklmnopqrstuvwxyz'
 
         for line in lines:
             line_indent = len(line) - len(line.lstrip())
@@ -877,8 +962,10 @@ class TypingSimulatorApp(tk.Tk):
                     pyautogui.press('backspace', interval=0)
             
             current_indent = line_indent
+            stripped_line = line.strip()
+            line_len = len(stripped_line)
 
-            for i, char in enumerate(line.strip()):
+            for i, char in enumerate(stripped_line):
                 if self.stop_typing.is_set():
                     self.after(0, lambda: self.update_start_button_text(0))
                     return
@@ -887,10 +974,10 @@ class TypingSimulatorApp(tk.Tk):
                     if self.stop_typing.is_set():
                         self.after(0, lambda: self.update_start_button_text(0))
                         return
-                    time.sleep(0.02)
+                    time.sleep(0.01)
 
-                if random.random() > accuracy and i < len(line.strip()) - 1:
-                    wrong_char = random.choice('abcdefghijklmnopqrstuvwxyz')
+                if random.random() > accuracy and i < line_len - 1:
+                    wrong_char = random.choice(typo_chars)
                     pyautogui.typewrite(wrong_char, interval=0)
                     time.sleep(interval)
                     pyautogui.press('backspace', interval=0)
@@ -903,19 +990,22 @@ class TypingSimulatorApp(tk.Tk):
 
                 chars_typed += 1
                 pct = int((chars_typed / total_chars) * 100)
-                self.after(0, lambda p=pct: self.update_start_button_text(p))
-                
-                if self.network.role == "Receiver":
-                    self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
+                if pct != last_reported_pct:
+                    last_reported_pct = pct
+                    self.after(0, lambda p=pct: self.update_start_button_text(p))
+                    if self.network.role == "Receiver":
+                        self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
             
             if line != lines[-1]:
                 pyautogui.press('enter', interval=0)
                 time.sleep(interval)
                 chars_typed += 1
                 pct = int((chars_typed / total_chars) * 100)
-                self.after(0, lambda p=pct: self.update_start_button_text(p))
-                if self.network.role == "Receiver":
-                    self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
+                if pct != last_reported_pct:
+                    last_reported_pct = pct
+                    self.after(0, lambda p=pct: self.update_start_button_text(p))
+                    if self.network.role == "Receiver":
+                        self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
 
         self.after(0, lambda: self.update_start_button_text(100))
         if self.network.role == "Receiver":
@@ -937,7 +1027,7 @@ class TypingSimulatorApp(tk.Tk):
         if self.network:
             self.network.close()
         if self.typing_thread and self.typing_thread.is_alive():
-            self.typing_thread.join(timeout=0.2)
+            self.typing_thread.join(timeout=0.1)
         if self.listener and self.listener.running:
             self.listener.stop()
         self.destroy()
