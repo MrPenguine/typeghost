@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / URL-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build artifacts
+build/
+*.spec
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
