@@ -1,0 +1,2 @@
+# TypeGhost Android Sender (Kivy) Dependencies
+kivy>=2.3.0
