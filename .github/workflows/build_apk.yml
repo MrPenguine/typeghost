@@ -34,7 +34,20 @@ jobs:
       - name: Build with Buildozer (Auto-Accept SDK License)
         working-directory: ./android_sender
         run: |
-          yes | buildozer android debug
+          for attempt in 1 2 3; do
+            if yes | buildozer android debug; then
+              break
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Build failed on attempt $attempt. Cleaning Android SDK temp cache and retrying..."
+              rm -rf ~/.buildozer/android/platform/android-sdk/temp
+              sleep 5
+            else
+              echo "Build failed after $attempt attempts."
+              exit 1
+            fi
+          done
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
