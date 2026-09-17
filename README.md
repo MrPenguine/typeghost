@@ -26,8 +26,27 @@ This is a Python application that simulates typing using the `tkinter` library f
 You can install the required dependencies using pip:
 
 ```sh
-pip install pyautogui pynput ttkbootstrap
+pip install -r requirements.txt
 ```
+
+### Running on macOS
+
+1. **Permissions Requirement (Crucial)**:
+   Since TypeGhost uses `pyautogui` to simulate keystrokes and `pynput` to listen for global hotkeys (ESC, Arrow keys), macOS requires accessibility and input monitoring permissions:
+   - Go to **System Settings** > **Privacy & Security** > **Accessibility**.
+   - Enable your terminal application (e.g., **Terminal**, **iTerm**, or your IDE/editor) or Python.
+   - Also verify under **System Settings** > **Privacy & Security** > **Input Monitoring** that your terminal/Python has permission.
+
+2. **Launch the application**:
+   You can launch TypeGhost directly using the runner script:
+   ```sh
+   ./run.sh
+   ```
+   Or manually:
+   ```sh
+   source .venv/bin/activate
+   python3 typeghost.py
+   ```
 
 ## Usage
 

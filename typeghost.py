@@ -12,6 +12,18 @@ import ctypes
 import pyautogui
 from pynput import keyboard
 
+if platform.system() == "Darwin":
+    try:
+        import Quartz
+        import ApplicationServices
+    except ImportError:
+        Quartz = None
+        ApplicationServices = None
+else:
+    Quartz = None
+    ApplicationServices = None
+
+
 # High DPI awareness for ultra-sharp fonts on Windows
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -488,13 +500,20 @@ class TypingSimulatorApp(tk.Tk):
         self.current_percentage = 0
         self.current_layout_mode = None
         self._resize_debounce_job = None
+        self._kb_ctrl = None
+        self.mac_perm_banner = None
 
-        icon_path = os.path.join(getattr(sys, '_MEIPASS', os.path.abspath(".")), "icon.ico")
-        if not os.path.exists(icon_path):
-            icon_path = "icon.ico"
-        if os.path.exists(icon_path):
+        icon_png = os.path.join(getattr(sys, '_MEIPASS', os.path.abspath(".")), "icon.png")
+        icon_ico = os.path.join(getattr(sys, '_MEIPASS', os.path.abspath(".")), "icon.ico")
+        if os.path.exists(icon_png):
             try:
-                self.iconbitmap(icon_path)
+                self._app_icon = tk.PhotoImage(file=icon_png)
+                self.iconphoto(False, self._app_icon)
+            except Exception:
+                pass
+        elif os.path.exists(icon_ico):
+            try:
+                self.iconbitmap(icon_ico)
             except Exception:
                 pass
 
@@ -512,6 +531,146 @@ class TypingSimulatorApp(tk.Tk):
         self.bind("<F11>", self.toggle_fullscreen)
         self.bind("<Escape>", self.end_fullscreen)
         self.bind("<Configure>", self.on_window_resize)
+
+    def check_macos_accessibility(self, prompt=False):
+        if platform.system() != "Darwin":
+            return True
+        try:
+            import ApplicationServices
+            if prompt:
+                return ApplicationServices.AXIsProcessTrustedWithOptions({
+                    ApplicationServices.kAXTrustedCheckOptionPrompt: True
+                })
+            return ApplicationServices.AXIsProcessTrusted()
+        except Exception:
+            return True
+
+    def open_macos_accessibility_settings(self):
+        os.system('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"')
+
+    def recheck_mac_permission(self):
+        if self.check_macos_accessibility(prompt=False):
+            if self.mac_perm_banner:
+                self.mac_perm_banner.destroy()
+                self.mac_perm_banner = None
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="STANDALONE (PERMISSIONS OK)")
+        else:
+            self.check_macos_accessibility(prompt=True)
+            self.open_macos_accessibility_settings()
+
+    def setup_mac_permission_banner(self):
+        if platform.system() != "Darwin":
+            return
+        trusted = self.check_macos_accessibility(prompt=True)
+        if not trusted:
+            self.mac_perm_banner = tk.Frame(
+                self.root_container,
+                bg="#3A2218",
+                highlightthickness=1,
+                highlightbackground=ACCENT_YELLOW,
+                padx=12,
+                pady=8
+            )
+            self.mac_perm_banner.pack(fill="x", side="top", pady=(0, 8))
+
+            warn_label = tk.Label(
+                self.mac_perm_banner,
+                text="⚠️ macOS PERMISSION REQUIRED: Keystrokes to other apps are blocked until Terminal/Python is allowed in Accessibility settings.",
+                font=("JetBrains Mono", 8, "bold"),
+                fg=ACCENT_YELLOW,
+                bg="#3A2218"
+            )
+            warn_label.pack(side="left", padx=(4, 10))
+
+            open_btn = tk.Button(
+                self.mac_perm_banner,
+                text="OPEN SETTINGS",
+                font=("JetBrains Mono", 8, "bold"),
+                bg=ACCENT_YELLOW,
+                fg="#000000",
+                activebackground="#d68910",
+                activeforeground="#000000",
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=2,
+                command=self.open_macos_accessibility_settings
+            )
+            open_btn.pack(side="right", padx=(4, 0))
+
+            recheck_btn = tk.Button(
+                self.mac_perm_banner,
+                text="RECHECK",
+                font=("JetBrains Mono", 8, "bold"),
+                bg=BG_PANEL,
+                fg=TEXT_MAIN,
+                activebackground=BORDER_COLOR,
+                activeforeground=TEXT_MAIN,
+                relief="flat",
+                cursor="hand2",
+                padx=8,
+                pady=2,
+                command=self.recheck_mac_permission
+            )
+            recheck_btn.pack(side="right", padx=(4, 4))
+
+    def _mac_press_key(self, vk, char=None):
+        if Quartz is not None:
+            down = Quartz.CGEventCreateKeyboardEvent(None, vk, True)
+            if char is not None:
+                Quartz.CGEventKeyboardSetUnicodeString(down, len(char), char)
+            up = Quartz.CGEventCreateKeyboardEvent(None, vk, False)
+            if char is not None:
+                Quartz.CGEventKeyboardSetUnicodeString(up, len(char), char)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+            time.sleep(0.003)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+            time.sleep(0.003)
+        else:
+            if char is not None and char not in ('\r', '\n', '\t'):
+                pyautogui.typewrite(char, interval=0)
+            elif vk == 0x24:
+                pyautogui.press('enter', interval=0)
+            elif vk == 0x33:
+                pyautogui.press('backspace', interval=0)
+            elif vk == 0x30:
+                pyautogui.press('tab', interval=0)
+
+    def _type_char(self, char):
+        if platform.system() == "Darwin":
+            if char in ('\n', '\r'):
+                self._mac_press_key(0x24, '\r')
+            elif char == '\t':
+                self._mac_press_key(0x30, '\t')
+            elif char == '\x08':
+                self._mac_press_key(0x33)
+            else:
+                self._mac_press_key(0, char)
+        else:
+            try:
+                pyautogui.typewrite(char, interval=0)
+            except Exception:
+                if self._kb_ctrl is None:
+                    self._kb_ctrl = keyboard.Controller()
+                self._kb_ctrl.type(char)
+
+    def _press_key(self, key_name):
+        if platform.system() == "Darwin":
+            if key_name in ('backspace', 'delete'):
+                self._mac_press_key(0x33)
+            elif key_name in ('enter', 'return'):
+                self._mac_press_key(0x24, '\r')
+            elif key_name == 'tab':
+                self._mac_press_key(0x30, '\t')
+            elif key_name == 'space':
+                self._mac_press_key(0x31, ' ')
+            else:
+                pyautogui.press(key_name, interval=0)
+        else:
+            pyautogui.press(key_name, interval=0)
+
+
 
     def create_widgets(self):
         self.root_container = tk.Frame(self, bg=BG_ROOT, padx=8, pady=8)
@@ -607,10 +766,14 @@ class TypingSimulatorApp(tk.Tk):
             font=("JetBrains Mono", 7, "bold"),
             bg=ACCENT_GREEN,
             fg="#FFFFFF",
+            activebackground="#00D8A1",
+            activeforeground="#FFFFFF",
+            highlightbackground=ACCENT_GREEN,
+            highlightthickness=1,
             relief="flat",
             cursor="hand2",
             command=self.on_manual_ip_connect,
-            padx=4,
+            padx=6,
             pady=1
         )
         self.connect_ip_btn.pack(side="left")
@@ -631,6 +794,9 @@ class TypingSimulatorApp(tk.Tk):
             bg=BG_INPUT
         )
         self.status_label.pack(side="left")
+
+        # macOS Permission Warning Banner (if untrusted)
+        self.setup_mac_permission_banner()
 
         # ==========================================
         # 2. MAIN RESPONSIVE CONTAINER
@@ -676,6 +842,7 @@ class TypingSimulatorApp(tk.Tk):
         self.text_editor.grid(row=0, column=0, sticky="nsew")
         self.text_editor.bind("<<Paste>>", self.on_text_pasted)
         self.text_editor.bind("<KeyRelease>", self.on_text_changed)
+        self.text_editor.insert("1.0", "Hello! 123@#${}\n")
 
         # Right Sidebar Frame (Fullscreen / Wide Window Mode)
         self.sidebar_panel = tk.Frame(self.content_container, bg=BG_PANEL, highlightthickness=BORDER_WIDTH, highlightbackground=BORDER_COLOR, width=300, padx=14, pady=14)
@@ -1125,7 +1292,16 @@ class TypingSimulatorApp(tk.Tk):
         self.update_start_button_text(0)
 
     def typingProcess(self):
-        text_to_type = self.text_editor.get("1.0", tk.END).strip()
+        if platform.system() == "Darwin" and not self.check_macos_accessibility(prompt=False):
+            print("TypeGhost: macOS Accessibility permission is not granted! Opening Settings...")
+            self.check_macos_accessibility(prompt=True)
+            self.open_macos_accessibility_settings()
+            self.after(0, lambda: self.update_start_button_text("NO PERMISSION"))
+            return
+
+        text_to_type = self.text_editor.get("1.0", tk.END)
+        if text_to_type.endswith('\n'):
+            text_to_type = text_to_type[:-1]
         if not text_to_type:
             return
 
@@ -1149,67 +1325,47 @@ class TypingSimulatorApp(tk.Tk):
         total_chars = max(len(text), 1)
         chars_typed = 0
         last_reported_pct = -1
-
-        lines = text.split('\n')
-        current_indent = 0
         typo_chars = 'abcdefghijklmnopqrstuvwxyz'
 
-        for line in lines:
-            line_indent = len(line) - len(line.lstrip())
-            
-            if line_indent > current_indent:
-                for _ in range((line_indent - current_indent) // 4):
-                    pyautogui.press('tab', interval=0)
-            elif line_indent < current_indent:
-                pyautogui.press('enter', interval=0)
-                for _ in range((current_indent - line_indent) // 4):
-                    pyautogui.press('backspace', interval=0)
-            
-            current_indent = line_indent
-            stripped_line = line.strip()
-            line_len = len(stripped_line)
+        for i, char in enumerate(text):
+            if self.stop_typing.is_set():
+                self.after(0, lambda: self.update_start_button_text(0))
+                return
 
-            for i, char in enumerate(stripped_line):
+            while self.is_paused.is_set():
                 if self.stop_typing.is_set():
                     self.after(0, lambda: self.update_start_button_text(0))
                     return
+                time.sleep(0.01)
 
-                while self.is_paused.is_set():
-                    if self.stop_typing.is_set():
-                        self.after(0, lambda: self.update_start_button_text(0))
-                        return
-                    time.sleep(0.01)
+            # Check if typo simulation should apply (only on letters, never spaces or newlines)
+            is_typo_eligible = (
+                char.isalpha()
+                and i < total_chars - 1
+                and text[i + 1] not in ('\n', '\r')
+            )
 
-                if random.random() > accuracy and i < line_len - 1:
-                    wrong_char = random.choice(typo_chars)
-                    pyautogui.typewrite(wrong_char, interval=0)
-                    time.sleep(interval)
-                    pyautogui.press('backspace', interval=0)
-                    time.sleep(correction_interval)
-                    pyautogui.typewrite(char, interval=0)
-                    time.sleep(correction_interval)
-                else:
-                    pyautogui.typewrite(char, interval=0)
-                    time.sleep(interval)
-
-                chars_typed += 1
-                pct = int((chars_typed / total_chars) * 100)
-                if pct != last_reported_pct:
-                    last_reported_pct = pct
-                    self.after(0, lambda p=pct: self.update_start_button_text(p))
-                    if self.network.role == "Receiver":
-                        self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
-            
-            if line != lines[-1]:
-                pyautogui.press('enter', interval=0)
+            if is_typo_eligible and random.random() > accuracy:
+                wrong_char = random.choice(typo_chars)
+                if char.isupper():
+                    wrong_char = wrong_char.upper()
+                self._type_char(wrong_char)
                 time.sleep(interval)
-                chars_typed += 1
-                pct = int((chars_typed / total_chars) * 100)
-                if pct != last_reported_pct:
-                    last_reported_pct = pct
-                    self.after(0, lambda p=pct: self.update_start_button_text(p))
-                    if self.network.role == "Receiver":
-                        self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
+                self._press_key('backspace')
+                time.sleep(correction_interval)
+                self._type_char(char)
+                time.sleep(correction_interval)
+            else:
+                self._type_char(char)
+                time.sleep(interval)
+
+            chars_typed += 1
+            pct = int((chars_typed / total_chars) * 100)
+            if pct != last_reported_pct:
+                last_reported_pct = pct
+                self.after(0, lambda p=pct: self.update_start_button_text(p))
+                if self.network.role == "Receiver":
+                    self.network.send_packet({"type": "PROGRESS_UPDATE", "percentage": pct})
 
         self.after(0, lambda: self.update_start_button_text(100))
         if self.network.role == "Receiver":
