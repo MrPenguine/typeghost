@@ -46,6 +46,55 @@ ACCENT_RED = "#E74C3C"      # Danger Crimson Red
 ACCENT_YELLOW = "#F39C12"   # Warning Amber
 BORDER_WIDTH = 2
 
+class FlatButton(tk.Label):
+    """Custom flat button based on tk.Label that respects solid background colors on macOS Aqua."""
+    def __init__(self, master, text="", command=None, bg=ACCENT_GREEN, fg="#FFFFFF",
+                 activebackground=None, activeforeground=None, font=None,
+                 padx=10, pady=6, cursor="hand2", highlightthickness=0,
+                 highlightbackground=None, **kwargs):
+        self.command = command
+        self.default_bg = bg
+        self.default_fg = fg
+        self.active_bg = activebackground or bg
+        self.active_fg = activeforeground or fg
+        
+        super().__init__(
+            master, text=text, bg=bg, fg=fg, font=font,
+            padx=padx, pady=pady, cursor=cursor, relief="flat",
+            highlightthickness=highlightthickness,
+            highlightbackground=highlightbackground or bg,
+            **kwargs
+        )
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+
+    def _on_click(self, event=None):
+        if self.command:
+            self.command()
+
+    def _on_enter(self, event=None):
+        super().configure(bg=self.active_bg, fg=self.active_fg)
+
+    def _on_leave(self, event=None):
+        super().configure(bg=self.default_bg, fg=self.default_fg)
+
+    def configure(self, **kwargs):
+        if "bg" in kwargs:
+            self.default_bg = kwargs["bg"]
+        if "fg" in kwargs:
+            self.default_fg = kwargs["fg"]
+        if "activebackground" in kwargs:
+            self.active_bg = kwargs.pop("activebackground")
+        if "activeforeground" in kwargs:
+            self.active_fg = kwargs.pop("activeforeground")
+        if "command" in kwargs:
+            self.command = kwargs.pop("command")
+        super().configure(**kwargs)
+
+    config = configure
+
+
 class NetworkManager:
     def __init__(self, role_change_callback, message_callback, status_callback):
         self.role = "Standalone"  # Standalone, Sender, Receiver
@@ -583,7 +632,7 @@ class TypingSimulatorApp(tk.Tk):
             )
             warn_label.pack(side="left", padx=(4, 10))
 
-            open_btn = tk.Button(
+            open_btn = FlatButton(
                 self.mac_perm_banner,
                 text="OPEN SETTINGS",
                 font=("JetBrains Mono", 8, "bold"),
@@ -591,15 +640,13 @@ class TypingSimulatorApp(tk.Tk):
                 fg="#000000",
                 activebackground="#d68910",
                 activeforeground="#000000",
-                relief="flat",
-                cursor="hand2",
                 padx=8,
                 pady=2,
                 command=self.open_macos_accessibility_settings
             )
             open_btn.pack(side="right", padx=(4, 0))
 
-            recheck_btn = tk.Button(
+            recheck_btn = FlatButton(
                 self.mac_perm_banner,
                 text="RECHECK",
                 font=("JetBrains Mono", 8, "bold"),
@@ -607,68 +654,33 @@ class TypingSimulatorApp(tk.Tk):
                 fg=TEXT_MAIN,
                 activebackground=BORDER_COLOR,
                 activeforeground=TEXT_MAIN,
-                relief="flat",
-                cursor="hand2",
                 padx=8,
                 pady=2,
                 command=self.recheck_mac_permission
             )
             recheck_btn.pack(side="right", padx=(4, 4))
 
-    def _mac_press_key(self, vk, char=None):
-        if Quartz is not None:
-            down = Quartz.CGEventCreateKeyboardEvent(None, vk, True)
-            if char is not None:
-                Quartz.CGEventKeyboardSetUnicodeString(down, len(char), char)
-            up = Quartz.CGEventCreateKeyboardEvent(None, vk, False)
-            if char is not None:
-                Quartz.CGEventKeyboardSetUnicodeString(up, len(char), char)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
-            time.sleep(0.003)
-            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
-            time.sleep(0.003)
-        else:
-            if char is not None and char not in ('\r', '\n', '\t'):
-                pyautogui.typewrite(char, interval=0)
-            elif vk == 0x24:
-                pyautogui.press('enter', interval=0)
-            elif vk == 0x33:
-                pyautogui.press('backspace', interval=0)
-            elif vk == 0x30:
-                pyautogui.press('tab', interval=0)
-
     def _type_char(self, char):
-        if platform.system() == "Darwin":
-            if char in ('\n', '\r'):
-                self._mac_press_key(0x24, '\r')
-            elif char == '\t':
-                self._mac_press_key(0x30, '\t')
-            elif char == '\x08':
-                self._mac_press_key(0x33)
-            else:
-                self._mac_press_key(0, char)
+        if char in ('\n', '\r'):
+            pyautogui.press('enter', interval=0)
+        elif char == '\t':
+            pyautogui.press('tab', interval=0)
         else:
             try:
                 pyautogui.typewrite(char, interval=0)
             except Exception:
-                if self._kb_ctrl is None:
-                    self._kb_ctrl = keyboard.Controller()
-                self._kb_ctrl.type(char)
+                try:
+                    if self._kb_ctrl is None:
+                        self._kb_ctrl = keyboard.Controller()
+                    self._kb_ctrl.type(char)
+                except Exception:
+                    pass
 
     def _press_key(self, key_name):
-        if platform.system() == "Darwin":
-            if key_name in ('backspace', 'delete'):
-                self._mac_press_key(0x33)
-            elif key_name in ('enter', 'return'):
-                self._mac_press_key(0x24, '\r')
-            elif key_name == 'tab':
-                self._mac_press_key(0x30, '\t')
-            elif key_name == 'space':
-                self._mac_press_key(0x31, ' ')
-            else:
-                pyautogui.press(key_name, interval=0)
-        else:
+        try:
             pyautogui.press(key_name, interval=0)
+        except Exception:
+            pass
 
 
 
@@ -725,15 +737,12 @@ class TypingSimulatorApp(tk.Tk):
         self.role_buttons = {}
         roles = [("STANDALONE", "Standalone"), ("SENDER (CONTROLLER)", "Sender"), ("RECEIVER (TYPING TARGET)", "Receiver")]
         for text, val in roles:
-            btn = tk.Button(
+            btn = FlatButton(
                 self.role_buttons_box,
                 text=text,
                 font=("JetBrains Mono", 8, "bold"),
-                relief="flat",
-                highlightthickness=2,
-                padx=6,
-                pady=2,
-                cursor="hand2",
+                padx=8,
+                pady=3,
                 command=lambda v=val: self.select_role(v)
             )
             btn.pack(side="left", padx=(0, 5))
@@ -760,7 +769,7 @@ class TypingSimulatorApp(tk.Tk):
         self.manual_ip_entry.insert(0, "192.168.")
         self.manual_ip_entry.pack(side="left", padx=(0, 3))
         
-        self.connect_ip_btn = tk.Button(
+        self.connect_ip_btn = FlatButton(
             ip_row,
             text="LINK",
             font=("JetBrains Mono", 7, "bold"),
@@ -770,8 +779,6 @@ class TypingSimulatorApp(tk.Tk):
             activeforeground="#FFFFFF",
             highlightbackground=ACCENT_GREEN,
             highlightthickness=1,
-            relief="flat",
-            cursor="hand2",
             command=self.on_manual_ip_connect,
             padx=6,
             pady=1
@@ -905,7 +912,7 @@ class TypingSimulatorApp(tk.Tk):
         self.acc_top_entry.pack(side="left", pady=(2, 0))
         self.acc_top_entry.bind("<KeyRelease>", lambda e: self.sync_inputs('acc', self.acc_top_entry.get()))
 
-        self.start_top_btn = tk.Button(
+        self.start_top_btn = FlatButton(
             self.top_control_panel,
             text="▶  START TYPING (→)",
             font=("Inter", 10, "bold"),
@@ -913,15 +920,11 @@ class TypingSimulatorApp(tk.Tk):
             fg="#FFFFFF",
             activebackground="#00D8A1",
             activeforeground="#FFFFFF",
-            highlightbackground=ACCENT_GREEN,
-            highlightthickness=1,
-            relief="flat",
-            cursor="hand2",
             command=self.handle_start_action,
             pady=8
         )
 
-        self.clear_top_btn = tk.Button(
+        self.clear_top_btn = FlatButton(
             self.top_control_panel,
             text="⏹  STOP & CLEAR (ESC)",
             font=("Inter", 10, "bold"),
@@ -929,10 +932,6 @@ class TypingSimulatorApp(tk.Tk):
             fg="#FFFFFF",
             activebackground="#C0392B",
             activeforeground="#FFFFFF",
-            highlightbackground=ACCENT_RED,
-            highlightthickness=1,
-            relief="flat",
-            cursor="hand2",
             command=self.handle_clear_action,
             pady=8
         )
@@ -983,7 +982,7 @@ class TypingSimulatorApp(tk.Tk):
 
         tk.Frame(self.sidebar_content, bg=BG_PANEL).pack(fill="both", expand=True)
 
-        self.start_side_btn = tk.Button(
+        self.start_side_btn = FlatButton(
             self.sidebar_content,
             text="▶  START TYPING (→)",
             font=("Inter", 10, "bold"),
@@ -991,16 +990,12 @@ class TypingSimulatorApp(tk.Tk):
             fg="#FFFFFF",
             activebackground="#00D8A1",
             activeforeground="#FFFFFF",
-            highlightbackground=ACCENT_GREEN,
-            highlightthickness=1,
-            relief="flat",
-            cursor="hand2",
             command=self.handle_start_action,
             pady=10
         )
         self.start_side_btn.pack(fill="x", pady=(0, 10))
 
-        self.clear_side_btn = tk.Button(
+        self.clear_side_btn = FlatButton(
             self.sidebar_content,
             text="⏹  STOP & CLEAR (ESC)",
             font=("Inter", 10, "bold"),
@@ -1008,10 +1003,6 @@ class TypingSimulatorApp(tk.Tk):
             fg="#FFFFFF",
             activebackground="#C0392B",
             activeforeground="#FFFFFF",
-            highlightbackground=ACCENT_RED,
-            highlightthickness=1,
-            relief="flat",
-            cursor="hand2",
             command=self.handle_clear_action,
             pady=10
         )
@@ -1072,12 +1063,12 @@ class TypingSimulatorApp(tk.Tk):
         for role_val, btn in self.role_buttons.items():
             if role_val == active_role:
                 btn.configure(
-                    bg="#FFFFFF",
-                    fg="#1A1A1A",
-                    activebackground="#FFFFFF",
-                    activeforeground="#000000",
+                    bg=ACCENT_GREEN,
+                    fg="#FFFFFF",
+                    activebackground="#00D8A1",
+                    activeforeground="#FFFFFF",
                     highlightbackground=ACCENT_GREEN,
-                    highlightthickness=2
+                    highlightthickness=1
                 )
             else:
                 btn.configure(
